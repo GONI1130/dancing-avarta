@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>Dance Avatar Frontend</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #1a1a1a; }
+    #ui-container { position: absolute; top: 20px; left: 20px; z-index: 100; background: rgba(0,0,0,0.7); padding: 15px; border-radius: 8px; color: white; }
+    input { width: 300px; padding: 8px; margin-right: 5px; }
+    button { padding: 8px 15px; cursor: pointer; }
+    #loading { margin-top: 10px; color: #ffeb3b; display: none; }
+  </style>
+
+  <!-- 3D & Retargeting 라이브러리 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/kalidokit@1.1.5/dist/kalidokit.umd.js"></script>
+</head>
+<body>
+
+  <div id="ui-container">
+    <h3>아이돌 안무 3D 변환기</h3>
+    <input type="text" id="youtube-url" placeholder="유튜브 안무 영상 URL 입력">
+    <button onclick="processYoutube()">안무 따기</button>
+    <div id="loading">백엔드에서 모션 추출 중... (약 10~20초 소요)</div>
+  </div>
+
+  <div id="canvas-container"></div>
+
+  <script>
+    // ⚠️ 여기에 Codespaces 8000번 포트의 Public URL을 넣으세요!
+    const BACKEND_URL = "https://zany-invention-p7pj9rqwxvg9f99x-8000.app.github.dev";
+
+    // 1. Three.js 기본 씬 준비
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x222222);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 1.2, 3);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 1, 0);
+
+    const light = new THREE.DirectionalLight(0xffffff, 1.2);
+    light.position.set(1, 2, 3);
+    scene.add(light);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+
+    // 2. 3D 아바타 로드 및 관절 매핑
+    let rigNodes = {};
+    const loader = new THREE.GLTFLoader();
+    loader.load('https://threejs.org/examples/models/gltf/Xbot.glb', (gltf) => {
+      const model = gltf.scene;
+      scene.add(model);
+
+      model.traverse((obj) => {
+        if (obj.isBone) {
+          if (obj.name === 'mixamorigSpine') rigNodes.Spine = obj;
+          if (obj.name === 'mixamorigChest') rigNodes.Chest = obj;
+          if (obj.name === 'mixamorigNeck') rigNodes.Neck = obj;
+          if (obj.name === 'mixamorigLeftArm') rigNodes.LeftUpperArm = obj;
+          if (obj.name === 'mixamorigLeftForeArm') rigNodes.LeftLowerArm = obj;
+          if (obj.name === 'mixamorigRightArm') rigNodes.RightUpperArm = obj;
+          if (obj.name === 'mixamorigRightForeArm') rigNodes.RightLowerArm = obj;
+          if (obj.name === 'mixamorigLeftUpLeg') rigNodes.LeftUpperLeg = obj;
+          if (obj.name === 'mixamorigLeftLeg') rigNodes.LeftLowerLeg = obj;
+          if (obj.name === 'mixamorigRightUpLeg') rigNodes.RightUpperLeg = obj;
+          if (obj.name === 'mixamorigRightLeg') rigNodes.RightLowerLeg = obj;
+        }
+      });
+    });
+
+    // 3. 백엔드 통신 및 모션 재생
+    async function processYoutube() {
+      const url = document.getElementById('youtube-url').value;
+      if (!url) return alert('유튜브 URL을 입력하세요.');
+
+      document.getElementById('loading').style.display = 'block';
+
+      try {
+        console.log('[DEBUG] 요청 시작 →', `${BACKEND_URL}/api/process-youtube`);
+
+        const response = await fetch(`${BACKEND_URL}/api/process-youtube`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: url })
+        });
+
+        // --- 디버깅: 응답 상태와 원문(raw) body 확인 ---
+        console.log('[DEBUG] response.status:', response.status);
+        console.log('[DEBUG] response.ok:', response.ok);
+        console.log('[DEBUG] content-type:', response.headers.get('content-type'));
+
+        const rawText = await response.text();
+        console.log('[DEBUG] raw body length:', rawText.length);
+        console.log('[DEBUG] raw body (앞 1000자):', rawText.slice(0, 1000));
+
+        if (!response.ok) {
+          document.getElementById('loading').style.display = 'none';
+          alert(`서버 에러 (status: ${response.status}). 콘솔 로그를 확인하세요.`);
+          return;
+        }
+
+        let resData;
+        try {
+          resData = JSON.parse(rawText);
+        } catch (parseErr) {
+          console.error('[DEBUG] JSON 파싱 실패:', parseErr);
+          document.getElementById('loading').style.display = 'none';
+          alert('응답이 올바른 JSON이 아닙니다. 콘솔 로그를 확인하세요.');
+          return;
+        }
+
+        document.getElementById('loading').style.display = 'none';
+
+        if (resData && resData.status === 'success') {
+          console.log('[DEBUG] 총 프레임 수:', resData.data && resData.data.total_frames);
+          playMotion(resData.data);
+        } else {
+          console.warn('[DEBUG] 예상치 못한 응답 형식:', resData);
+          alert('모션 추출 실패');
+        }
+      } catch (err) {
+        document.getElementById('loading').style.display = 'none';
+        alert('백엔드 통신 에러가 발생했습니다.');
+        console.error('[DEBUG] fetch 자체 실패(네트워크/CORS 등):', err);
+      }
+    }
+
+    // 4. 모션 재생 애니메이션
+    function playMotion(motionData) {
+      let frameIdx = 0;
+      const interval = 1000 / motionData.fps;
+
+      const timer = setInterval(() => {
+        if (frameIdx >= motionData.frames.length) {
+          clearInterval(timer);
+          return;
+        }
+
+        const frame = motionData.frames[frameIdx];
+        if (frame.poseWorldLandmarks.length > 0 && frame.poseLandmarks.length > 0) {
+
+          // Kalidokit 변환
+          const poseRig = Kalidokit.Pose.solve(frame.poseWorldLandmarks, frame.poseLandmarks, {
+            runtime: 'mediapipe',
+            enableLockAxis: true
+          });
+
+          if (poseRig) {
+            applyRotation(rigNodes.Spine, poseRig.Spine);
+            applyRotation(rigNodes.Chest, poseRig.Chest);
+            applyRotation(rigNodes.Neck, poseRig.Neck);
+            applyRotation(rigNodes.LeftUpperArm, poseRig.LeftUpperArm);
+            applyRotation(rigNodes.LeftLowerArm, poseRig.LeftLowerArm);
+            applyRotation(rigNodes.RightUpperArm, poseRig.RightUpperArm);
+            applyRotation(rigNodes.RightLowerArm, poseRig.RightLowerArm);
+            applyRotation(rigNodes.LeftUpperLeg, poseRig.LeftUpperLeg);
+            applyRotation(rigNodes.LeftLowerLeg, poseRig.LeftLowerLeg);
+            applyRotation(rigNodes.RightUpperLeg, poseRig.RightUpperLeg);
+            applyRotation(rigNodes.RightLowerLeg, poseRig.RightLowerLeg);
+          }
+        }
+        frameIdx++;
+      }, interval);
+    }
+
+    function applyRotation(bone, rotation) {
+      if (!bone || !rotation) return;
+      const euler = new THREE.Euler(rotation.x, rotation.y, rotation.z, 'XYZ');
+      bone.quaternion.setFromEuler(euler);
+    }
+
+    // 렌더링 루프
+    function render() {
+      requestAnimationFrame(render);
+      renderer.render(scene, camera);
+    }
+    render();
+  </script>
+</body>
+</html>

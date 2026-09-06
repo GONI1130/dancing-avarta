@@ -1,5 +1,28 @@
+# 유튜브 로그인 쿠키 (절대 커밋 금지 - 계정 탈취 위험)
+cookies.txt
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# 다운로드 중 생성되는 임시 영상 파일
 temp_*.mp4
+temp_*.webm
+temp_*.f*.mp4
+temp_*.f*.webm
+
+# Node.js (bgutil PO Token 서버)
+bgutil-ytdlp-pot-provider/server/node_modules/
+bgutil-ytdlp-pot-provider/server/build/
+
+# 로그
 *.log
+
+# OS/에디터
+.DS_Store
 .vscode/
+.idea/

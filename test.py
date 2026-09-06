@@ -30,18 +30,86 @@ def cleanup_file(filepath: str):
         except Exception as e:
             print(f"파일 삭제 실패: {e}")
 
-def process_video_pose(video_path: str):
-    """MediaPipe를 사용해 동영상에서 3D 관절 좌표 추출"""
+def process_video_pose(video_path: str, output_viz_path: str = None):
+    """MediaPipe를 사용해 관절을 추출하고, 필요시 스켈레톤이 그려진 동영상을 생성"""
     mp_pose = mp.solutions.pose
+    mp_drawing = mp.solutions.drawing_utils          # 관절 그리기 도구
+    mp_drawing_styles = mp.solutions.drawing_styles  # 스타일 설정
+
     pose = mp_pose.Pose(
         static_image_mode=False,
-        model_complexity=1,  # 서버 속도 및 과부하 방지를 위해 1로 설정
+        model_complexity=2,
         smooth_landmarks=True,
         enable_segmentation=False,
         min_detection_confidence=0.5,
         min_tracking_confidence=0.5
     )
 
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # 비디오 저장 설정 (시각화 동영상 생성용)
+    out_video = None
+    if output_viz_path:
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out_video = cv2.VideoWriter(output_viz_path, fourcc, fps, (width, height))
+
+    motion_data = []
+    frame_idx = 0
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(image_rgb)
+
+        # =========================================================
+        # 원본 영상 프레임 위에 MediaPipe 뼈대(Skeleton) 그리기
+        # =========================================================
+        if results.pose_landmarks and out_video:
+            mp_drawing.draw_landmarks(
+                frame,
+                results.pose_landmarks,
+                mp_pose.POSE_CONNECTIONS,
+                landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style()
+            )
+            out_video.write(frame)  # 뼈대가 그려진 프레임을 동영상에 저장
+
+        # 3D/2D 관절 좌표 추출 로직 (기존 동일)
+        landmarks_3d = []
+        landmarks_2d = []
+
+        if results.pose_world_landmarks:
+            for lm in results.pose_world_landmarks.landmark:
+                landmarks_3d.append({"x": lm.x, "y": lm.y, "z": lm.z, "visibility": lm.visibility})
+
+        if results.pose_landmarks:
+            for lm in results.pose_landmarks.landmark:
+                landmarks_2d.append({"x": lm.x, "y": lm.y, "z": lm.z, "visibility": lm.visibility})
+
+        motion_data.append({
+            "frame": frame_idx,
+            "timestamp": frame_idx / fps if fps > 0 else 0,
+            "poseWorldLandmarks": landmarks_3d,
+            "poseLandmarks": landmarks_2d
+        })
+
+        frame_idx += 1
+
+    cap.release()
+    if out_video:
+        out_video.release()
+    pose.close()
+
+    return {
+        "fps": fps,
+        "total_frames": frame_idx,
+        "frames": motion_data
+    }
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     motion_data = []
@@ -99,6 +167,7 @@ async def extract_pose_from_youtube(request: YouTubeRequest, background_tasks: B
     url_str = str(request.url)
     task_id = str(uuid.uuid4())
     output_filename = f"temp_{task_id}.mp4"
+    viz_filename = f"result_{task_id}.mp4"  # 관절 영상 저장 경로
 
     # =========================================================
     # 유튜브 봇 차단 회피 옵션이 추가된 yt-dlp 설정
@@ -155,12 +224,15 @@ async def extract_pose_from_youtube(request: YouTubeRequest, background_tasks: B
     background_tasks.add_task(cleanup_file, output_filename)
 
     try:
-        print("모션 데이터 추출 중...", flush=True)
-        result_data = process_video_pose(output_filename)
-        print("모션 추출 완료!", flush=True)
+        print("모션 데이터 추출 및 시각화 영상 생성 중...")
+        # 시각화 영상 파일명을 인자로 전달
+        result_data = process_video_pose(output_filename, output_viz_path=viz_filename)
+        print(f"관절 시각화 영상 생성 완료: {viz_filename}")
+
         return {
             "status": "success",
-            "data": result_data
+            "data": result_data,
+            "viz_video": viz_filename
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"모션 추출 실패: {str(e)}")
