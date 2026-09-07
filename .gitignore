@@ -1,5 +1,6 @@
 # 유튜브 로그인 쿠키 (절대 커밋 금지 - 계정 탈취 위험)
 cookies.txt
+.env
 
 # Python
 __pycache__/
@@ -14,6 +15,13 @@ temp_*.mp4
 temp_*.webm
 temp_*.f*.mp4
 temp_*.f*.webm
+tmp/
+tmp_verify_*
+tmp_real_*
+debug_*.mp4
+job_*.json
+dl_*.mp4
+result_*.mp4
 
 # Node.js (bgutil PO Token 서버)
 bgutil-ytdlp-pot-provider/server/node_modules/

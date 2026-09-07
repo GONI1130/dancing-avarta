@@ -10,7 +10,11 @@ set -e
 
 # 프로젝트 루트 기준 경로 (필요하면 환경에 맞게 수정하세요)
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BGUTIL_DIR="/workspaces/dancing-avarta/bgutil-ytdlp-pot-provider/server"
+# Codespaces 절대경로 하드코딩 제거 → 프로젝트 내 상대경로 우선, 없으면 예전 경로 폴백 (앱/Docker 대응)
+BGUTIL_DIR="${BGUTIL_DIR:-$PROJECT_ROOT/bgutil-ytdlp-pot-provider/server}"
+if [ ! -d "$BGUTIL_DIR" ] && [ -d "/workspaces/dancing-avarta/bgutil-ytdlp-pot-provider/server" ]; then
+  BGUTIL_DIR="/workspaces/dancing-avarta/bgutil-ytdlp-pot-provider/server"
+fi
 BGUTIL_LOG="/tmp/bgutil-server.log"
 BGUTIL_PORT=4416
 

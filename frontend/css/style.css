@@ -1,0 +1,7 @@
+body { margin: 0; overflow: hidden; background: #1a1a1a; font-family: system-ui, sans-serif; }
+#ui-container { position: absolute; top: max(12px, env(safe-area-inset-top)); left: 12px; right: 12px; z-index: 100; background: rgba(0,0,0,0.7); padding: 15px; border-radius: 8px; color: white; max-width: 420px; }
+input { width: 100%; box-sizing: border-box; padding: 10px; margin: 4px 0; }
+button { padding: 10px 15px; cursor: pointer; width: 100%; margin-top: 6px; }
+#loading { margin-top: 10px; color: #ffeb3b; display: none; }
+#progress { width: 100%; display: none; margin-top: 8px; }
+canvas { touch-action: none; display: block; }

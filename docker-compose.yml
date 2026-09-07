@@ -1,0 +1,70 @@
+services:
+  api:
+    build: .
+    ports:
+      - "${PORT:-8000}:8000"
+    env_file: .env
+    environment:
+      TMP_DIR: /srv/tmp
+      COOKIES_PATH: /srv/cookies.txt
+      STORE_BACKEND: ${STORE_BACKEND:-auto}
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://motion:motion@postgres:5432/motion
+    volumes:
+      - ./tmp:/srv/tmp
+      # cookies.txt는 로컬에만 두고 마운트 (이미지/깃에 포함 금지)
+      - ./cookies.txt:/srv/cookies.txt:ro
+    depends_on:
+      pot-provider:
+        condition: service_started
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    secrets:
+      - youtube_cookies
+
+  redis:
+    image: redis:7-alpine
+    expose:
+      - "6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    expose:
+      - "5432"
+    environment:
+      POSTGRES_USER: motion
+      POSTGRES_PASSWORD: motion
+      POSTGRES_DB: motion
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U motion"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # yt-dlp PO Token 내부 발급기 (외부 공개 금지: ports 없음)
+  pot-provider:
+    image: node:20-slim
+    working_dir: /srv/pot
+    volumes:
+      - ./bgutil-ytdlp-pot-provider:/srv/pot:ro
+    command: ["node", "server/build/main.js"]
+    expose:
+      - "4416"
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  pg-data:
+
+secrets:
+  youtube_cookies:
+    file: ./cookies.txt

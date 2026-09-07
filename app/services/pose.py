@@ -1,0 +1,170 @@
+"""포즈+손 추출 오케스트레이션. 검출(detect.py)+추적(tracking.py) 조합.
+
+target: auto(1명 전제) | left | center | right | face(기준사진 필요)
+반환: {fps, total_frames, img_w, img_h, target:{mode,label,persons_max},
+       frames:[{frame,timestamp,poseWorldLandmarks,poseLandmarks,hands,persons,lost}]}
+얼굴 표정은 의도적으로 미지원.
+"""
+import os
+from collections.abc import Callable
+
+from app.services.detect import (
+    detect_hands,
+    detect_poses,
+    ensure_hand_model,
+    ensure_pose_model,
+    null_context,
+)
+from app.services.tracking import Tracker, _person_entries, assign_hands
+
+
+def process_video_pose(video_path: str, max_frames: int = 900,
+                       progress_cb: Callable[[int, int], None] | None = None,
+                       target: str = "auto",
+                       ref_image_b64: str | None = None) -> dict:
+    import cv2
+    import mediapipe as mp
+
+    if hasattr(mp, "solutions") and hasattr(getattr(mp, "solutions", None), "pose"):
+        return _legacy_process(cv2, mp, video_path, max_frames, progress_cb)
+
+    from mediapipe.tasks.python import vision as mp_vision
+    from mediapipe.tasks.python import BaseOptions
+
+    from app.core.config import get_settings
+    settings = get_settings()
+    # 대상 지정: auto면 1명만 검출(기존 속도), 그 외는 다인 검출+추적
+    multi = target in ("left", "center", "right", "face")
+    max_poses = max(1, int(os.getenv("MAX_POSES", "4"))) if multi else 1
+    options = mp_vision.PoseLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=ensure_pose_model(settings.tmp_dir)),
+        running_mode=mp_vision.RunningMode.VIDEO,
+        num_poses=max_poses,
+        min_pose_detection_confidence=0.5,
+        min_pose_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
+    )
+    enable_hands = os.getenv("ENABLE_HANDS", "1").strip() not in ("0", "false", "no")
+    max_hands = int(os.getenv("MAX_HANDS", "2"))
+    hand_options = None
+    if enable_hands:
+        hand_options = mp_vision.HandLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=ensure_hand_model(settings.tmp_dir)),
+            running_mode=mp_vision.RunningMode.VIDEO,
+            num_hands=max_hands,
+            min_hand_detection_confidence=0.5,
+            min_hand_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+    ref_emb = None
+    if target == "face":
+        if not (ref_image_b64 or "").strip():
+            raise RuntimeError("target=face인데 기준 얼굴사진(ref_image_b64)이 없습니다")
+        from app.services.face_match import decode_ref_image, embed_face_bgr
+        ref_emb = embed_face_bgr(decode_ref_image(ref_image_b64))
+        if ref_emb is None:
+            raise RuntimeError("기준 얼굴사진에서 얼굴을 찾지 못했습니다")
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"동영상 파일을 열 수 없음: {video_path}")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    img_w = cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1.0
+    img_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 1.0
+    tracker = Tracker(target if multi else "auto")
+    motion_data: list[dict] = []
+    frame_idx = 0
+    try:
+        with mp_vision.PoseLandmarker.create_from_options(options) as landmarker:
+            hand_ctx = null_context() if hand_options is None else \
+                mp_vision.HandLandmarker.create_from_options(hand_options)
+            with hand_ctx as hands:
+                while True:
+                    ret, frame = cap.read()
+                    if not ret or frame_idx >= max_frames:
+                        break
+                    image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+                    ts_ms = int(frame_idx / fps * 1000) if fps > 0 else frame_idx * 33
+                    lms2d, lms3d = detect_poses(landmarker, mp_image, ts_ms)
+                    persons = _person_entries(lms2d, lms3d)
+                    lms3d_pick, lms2d_pick, pick, lost = tracker.update(
+                        persons, image_rgb, ref_emb)
+                    hand_entries = detect_hands(hands, mp_image, ts_ms) if hands is not None else []
+                    if multi and persons:
+                        hand_entries = assign_hands(hand_entries, persons, pick)
+                    motion_data.append({
+                        "frame": frame_idx,
+                        "timestamp": frame_idx / fps if fps > 0 else 0,
+                        "poseWorldLandmarks": lms3d_pick,
+                        "poseLandmarks": lms2d_pick,
+                        "hands": hand_entries,
+                        "persons": len(persons),
+                        "lost": lost,
+                    })
+                    frame_idx += 1
+                    if progress_cb and frame_idx % 30 == 0:
+                        progress_cb(frame_idx, max_frames)
+    finally:
+        cap.release()
+    return {"fps": fps, "total_frames": frame_idx, "frames": motion_data,
+            "img_w": img_w, "img_h": img_h,
+            "target": {"mode": target, "label": tracker.label,
+                       "persons_max": tracker.persons_max}}
+
+
+def _legacy_process(cv2, mp, video_path: str, max_frames: int,
+                    progress_cb: Callable[[int, int], None] | None) -> dict:
+    """mediapipe<1.0 (mp.solutions 존재) 환경용 기존 경로."""
+    mp_pose = mp.solutions.pose
+    pose = mp_pose.Pose(
+        static_image_mode=False,
+        model_complexity=1,
+        smooth_landmarks=True,
+        enable_segmentation=False,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+    )
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        pose.close()
+        raise RuntimeError(f"동영상 파일을 열 수 없음: {video_path}")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    img_w = cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1.0
+    img_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 1.0
+    motion_data: list[dict] = []
+    frame_idx = 0
+    try:
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret or frame_idx >= max_frames:
+                break
+            image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = pose.process(image_rgb)
+            landmarks_3d, landmarks_2d = [], []
+            if results.pose_world_landmarks:
+                landmarks_3d = [{"x": lm.x, "y": lm.y, "z": lm.z,
+                                 "visibility": lm.visibility}
+                                for lm in results.pose_world_landmarks.landmark]
+            if results.pose_landmarks:
+                landmarks_2d = [{"x": lm.x, "y": lm.y, "z": lm.z,
+                                 "visibility": lm.visibility}
+                                for lm in results.pose_landmarks.landmark]
+            motion_data.append({
+                "frame": frame_idx,
+                "timestamp": frame_idx / fps if fps > 0 else 0,
+                "poseWorldLandmarks": landmarks_3d,
+                "poseLandmarks": landmarks_2d,
+                "hands": [],  # legacy(mp.solutions) 경로: 손 미지원
+                "persons": 1 if landmarks_2d else 0,
+                "lost": not bool(landmarks_2d),
+            })
+            frame_idx += 1
+            if progress_cb and frame_idx % 30 == 0:
+                progress_cb(frame_idx, max_frames)
+    finally:
+        cap.release()
+        pose.close()
+    return {"fps": fps, "total_frames": frame_idx, "frames": motion_data,
+            "img_w": img_w, "img_h": img_h,
+            "target": {"mode": "auto", "label": "auto", "persons_max": 1}}

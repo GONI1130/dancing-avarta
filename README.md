@@ -121,14 +121,27 @@ Node.js 서버입니다. `main.py`가 유튜브에 다운로드를 요청하기 
 
 ```
 .
-├── main.py                          # FastAPI 백엔드
-├── index.html                       # 프론트엔드 (Three.js + Kalidokit)
-├── cookies.txt                      # 유튜브 로그인 쿠키 (2차 다운로드 시도에 사용)
-├── start.sh                         # bgutil 서버 + 백엔드를 한 번에 실행하는 스크립트
-└── bgutil-ytdlp-pot-provider/       # PO Token 발급 서버 (yt-dlp 보조 인프라)
-    └── server/
-        └── build/main.js
+├── main.py                    # 호환용 진입점 (실체는 app/main.py)
+├── app/
+│   ├── main.py                # FastAPI 팩토리 (/health, /app 정적서빙)
+│   ├── api/                   # motions(잡) · frames(rig) · assets(bvh/mp4) · ws · legacy
+│   ├── core/                  # config, secrets
+│   ├── store/                 # 파사드 + backends(memory/redis/postgres) + blob(파일/S3)
+│   ├── schemas/               # 요청/응답 모델
+│   ├── services/              # youtube, detect, tracking, face_match,
+│   │                          # pose(오케스트레이션), kinematics(수학),
+│   │                          # exports(rig/BVH), pose_video, genvideo, audio
+│   └── pipeline/              # 잡 실행기 (runner + 단계별 steps)
+├── frontend/                  # index.html + js(config/scene/api/player/ui) + css
+├── cookies.txt                # 유튜브 로그인 쿠키 (git 금지, 시크릿 권장)
+├── start.sh                   # bgutil + 백엔드 실행 스크립트
+└── bgutil-ytdlp-pot-provider/ # PO Token 발급 서버 (yt-dlp 보조 인프라)
 ```
+
+API v1: `POST /api/v1/motions` (target/render 옵션) →
+`GET /{id}` 상태 → `/{id}/frames` (full 단일) →
+`/{id}/bvh|video|control|audio` + `/{id}/ws` 진행률 푸시.
+주 출력은 3D 아바타이며, AI 영상(`render=ref`)과 원본 음원은 참고·동기재생용.
 
 ---
 
